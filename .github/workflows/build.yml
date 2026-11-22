@@ -1,0 +1,119 @@
+name: Build and Release Magisk Module
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install fontTools for glyph verification
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3-fonttools file
+
+      - name: Download native Google Noto TrueType fallback fonts
+        run: |
+          mkdir -p build_pkg/system/fonts
+          curl -fsSL "https://github.com/google/fonts/raw/main/ofl/notosansmath/NotoSansMath-Regular.ttf" \
+            -o "build_pkg/system/fonts/DroidSansFallback.ttf"
+          curl -fsSL "https://github.com/google/fonts/raw/main/ofl/notosanssymbols2/NotoSansSymbols2-Regular.ttf" \
+            -o "build_pkg/system/fonts/NotoSansSymbols-Regular-Subsetted2.ttf"
+          file build_pkg/system/fonts/*.ttf
+          ls -lh build_pkg/system/fonts/*.ttf
+
+      - name: Verify TrueType headers and required Unicode glyphs
+        run: |
+          python3 -c '
+          from fontTools.ttLib import TTFont
+
+          math_font = TTFont("build_pkg/system/fonts/DroidSansFallback.ttf")
+          sym_font = TTFont("build_pkg/system/fonts/NotoSansSymbols-Regular-Subsetted2.ttf")
+
+          for label, font in [("Math", math_font), ("Symbols2", sym_font)]:
+              assert font.sfntVersion == "\x00\x01\x00\x00", f"{label} is not native TrueType: {font.sfntVersion!r}"
+
+          combined_cmap = set(math_font.getBestCmap().keys()) | set(sym_font.getBestCmap().keys())
+
+          checks = [
+              (0x1D686, "MATHEMATICAL MONOSPACE CAPITAL W"),
+              (0x1D56C, "MATHEMATICAL BOLD FRAKTUR CAPITAL A"),
+              (0x273F, "BLACK FLORETTE"),
+              (0x2661, "WHITE HEART SUIT"),
+              (0x1F650, "NORTH WEST POINTING LEAF (ORNAMENTAL DINGBATS)"),
+          ]
+          for cp, name in checks:
+              assert cp in combined_cmap, f"Missing U+{cp:04X} ({name})!"
+
+          print(f"Verified native Noto TTFs: {len(combined_cmap)} combined Unicode codepoints.")
+          '
+
+      - name: Copy module metadata and normalize line endings
+        run: |
+          for f in "module.prop" "customize.sh"; do
+            if [ ! -s "$f" ]; then
+              echo "::error::Missing or empty file: $f"
+              exit 1
+            fi
+          done
+          cp module.prop customize.sh build_pkg/
+          sed -i 's/\r$//' build_pkg/module.prop build_pkg/customize.sh
+          MOD_VER=$(grep -E '^version=' module.prop | head -n1 | cut -d'=' -f2- | tr -cd '[:alnum:]._-')
+          echo "MOD_VER=${MOD_VER:-v1.0}" >> "$GITHUB_ENV"
+
+      - name: Generate Magisk META-INF installer
+        run: |
+          mkdir -p build_pkg/META-INF/com/google/android
+          cat <<'EOF' > build_pkg/META-INF/com/google/android/update-binary
+          #!/sbin/sh
+          umask 022
+          ui_print() { echo "$1"; }
+          require_new_magisk() {
+            ui_print "Please install Magisk v20.4+!"
+            exit 1
+          }
+          OUTFD=$2
+          ZIPFILE=$3
+          mount /data 2>/dev/null
+          [ -f /data/adb/magisk/util_functions.sh ] || require_new_magisk
+          . /data/adb/magisk/util_functions.sh
+          [ $MAGISK_VER_CODE -lt 20400 ] && require_new_magisk
+          install_module
+          exit 0
+          EOF
+          chmod 755 build_pkg/META-INF/com/google/android/update-binary
+          printf '#MAGISK\n' > build_pkg/META-INF/com/google/android/updater-script
+
+      - name: Package Magisk module ZIP at root
+        run: |
+          (cd build_pkg && zip -r9 ../Noto-Unicode-Fallback.zip META-INF module.prop customize.sh system -x "*.DS_Store")
+          echo "=== Verifying ZIP root contents ==="
+          unzip -l Noto-Unicode-Fallback.zip
+
+      - name: Publish directly to GitHub Releases
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="latest"
+          TITLE="Noto Unicode Fallback ${MOD_VER}"
+          NOTES="Direct flashable Magisk module ZIP using native Google Noto Math and Symbols2 TrueType fonts. Flash directly in Magisk without extracting."
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release delete-asset "$TAG" Quivira-Fallback.zip -y >/dev/null 2>&1 || true
+            gh release upload "$TAG" Noto-Unicode-Fallback.zip --clobber
+            gh release edit "$TAG" --title "$TITLE" --notes "$NOTES"
+          else
+            gh release create "$TAG" Noto-Unicode-Fallback.zip \
+              --title "$TITLE" \
+              --notes "$NOTES"
+          fi
