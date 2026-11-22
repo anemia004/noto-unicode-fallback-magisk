@@ -1,0 +1,88 @@
+name: Build Magisk Module
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify required module files exist
+        run: |
+          missing=0
+          for f in "module.prop" "customize.sh" "system/fonts/Quivira.ttf"; do
+            if [ ! -f "$f" ]; then
+              echo "::error::Missing required file: $f"
+              missing=1
+            fi
+          done
+          if [ "$missing" -ne 0 ]; then
+            echo "Build aborted: upload all required files and re-run."
+            exit 1
+          fi
+          if [ ! -s "system/fonts/Quivira.ttf" ]; then
+            echo "::error::system/fonts/Quivira.ttf is empty (0 bytes)."
+            exit 1
+          fi
+
+      - name: Normalize line endings to Unix LF
+        run: |
+          sed -i 's/\r$//' module.prop customize.sh
+
+      - name: Generate Magisk v22 META-INF installer
+        run: |
+          mkdir -p META-INF/com/google/android
+          cat <<'EOF' > META-INF/com/google/android/update-binary
+          #!/sbin/sh
+          #################
+          # Initialization
+          #################
+
+          umask 022
+
+          ui_print() { echo "$1"; }
+
+          require_new_magisk() {
+            ui_print "*******************************"
+            ui_print " Please install Magisk v20.4+! "
+            ui_print "*******************************"
+            exit 1
+          }
+
+          #########################
+          # Load util_functions.sh
+          #########################
+
+          OUTFD=$2
+          ZIPFILE=$3
+
+          mount /data 2>/dev/null
+
+          [ -f /data/adb/magisk/util_functions.sh ] || require_new_magisk
+          . /data/adb/magisk/util_functions.sh
+          [ $MAGISK_VER_CODE -lt 20400 ] && require_new_magisk
+
+          install_module
+          exit 0
+          EOF
+          printf '#MAGISK\n' > META-INF/com/google/android/updater-script
+
+      - name: Package Magisk module ZIP at root
+        run: |
+          zip -r9 Quivira-Fallback.zip META-INF module.prop customize.sh system -x "*.DS_Store"
+          echo "=== Verifying ZIP root contents ==="
+          unzip -l Quivira-Fallback.zip
+
+      - name: Upload Magisk module artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Quivira-Fallback-Module
+          path: Quivira-Fallback.zip
+          if-no-files-found: error
