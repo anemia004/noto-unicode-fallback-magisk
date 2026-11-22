@@ -1,0 +1,6 @@
+id=quivira_fallback
+name=Quivira Font Fallback
+version=v1.0
+versionCode=1
+author=yourname
+description=Adds Quivira as a last-resort systemless fallback font for Mathematical Alphanumeric Symbols and Dingbats on Android 7.1.2 without changing normal UI text.
