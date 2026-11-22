@@ -134,14 +134,14 @@ jobs:
       - name: Stamp new version into module.prop and normalize line endings
         if: env.HAS_FONT_UPDATE == 'true'
         run: |
-          for f in "module.prop" "customize.sh"; do
+          for f in "module.prop" "customize.sh" "LICENSE_OFL.txt"; do
             if [ ! -s "$f" ]; then
               echo "::error::Missing or empty file: $f"
               exit 1
             fi
           done
-          cp module.prop customize.sh build_pkg/
-          sed -i 's/\r$//' build_pkg/module.prop build_pkg/customize.sh
+          cp module.prop customize.sh LICENSE_OFL.txt build_pkg/
+          sed -i 's/\r$//' build_pkg/module.prop build_pkg/customize.sh build_pkg/LICENSE_OFL.txt
           sed -i "s/^version=.*/version=${NEXT_VER}/" build_pkg/module.prop
           sed -i "s/^versionCode=.*/versionCode=${NEXT_CODE}/" build_pkg/module.prop
 
@@ -172,18 +172,32 @@ jobs:
       - name: Package versioned Magisk module ZIP at root
         if: env.HAS_FONT_UPDATE == 'true'
         run: |
-          (cd build_pkg && zip -r9 "../${ZIP_FILE}" META-INF module.prop customize.sh system -x "*.DS_Store")
+          (cd build_pkg && zip -r9 "../${ZIP_FILE}" META-INF module.prop customize.sh LICENSE_OFL.txt system -x "*.DS_Store")
           unzip -l "${ZIP_FILE}"
 
-      - name: Create new versioned GitHub Release
+      - name: Create new versioned GitHub Release and update update.json
         if: env.HAS_FONT_UPDATE == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          printf 'Automatically fetched from Google upstream Noto TrueType fonts:\n* **Noto Sans Math:** `%s`\n* **Noto Sans Symbols 2:** `%s`\n\nDownload `%s` and flash directly in Magisk without extracting.\n\n<!-- Fonts-SHA256: %s -->\n' \
-            "${MATH_VER}" "${SYM_VER}" "${ZIP_FILE}" "${CURRENT_HASH}" > release_notes.md
+          printf '## Noto Unicode Fallback %s\n\nAutomatically fetched from Google upstream Noto TrueType fonts:\n* **Noto Sans Math:** `%s`\n* **Noto Sans Symbols 2:** `%s`\n\nDownload `%s` and flash directly in Magisk without extracting.\n\n<!-- Fonts-SHA256: %s -->\n' \
+            "${NEXT_VER}" "${MATH_VER}" "${SYM_VER}" "${ZIP_FILE}" "${CURRENT_HASH}" > changelog.md
 
           gh release create "${NEXT_VER}" "${ZIP_FILE}" \
             --title "Noto Unicode Fallback ${NEXT_VER}" \
-            --notes-file release_notes.md \
+            --notes-file changelog.md \
             --latest
+
+          ZIP_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${NEXT_VER}/${ZIP_FILE}"
+          CHANGELOG_URL="https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/main/changelog.md"
+
+          printf '{\n  "version": "%s",\n  "versionCode": %s,\n  "zipUrl": "%s",\n  "changelog": "%s"\n}\n' \
+            "${NEXT_VER}" "${NEXT_CODE}" "${ZIP_URL}" "${CHANGELOG_URL}" > update.json
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add update.json changelog.md
+          if ! git diff --cached --quiet; then
+            git commit -m "Update update.json and changelog.md for ${NEXT_VER} [skip ci]"
+            git push origin main
+          fi
