@@ -1,6 +1,6 @@
-id=quivira_fallback
-name=Noto Unicode Fallback (Math & Symbols)
-version=v3.0
-versionCode=3
+id=noto_unicode_fallback
+name=Noto Unicode Fallback
+version=v1.0
+versionCode=1
 author=yourname
-description=Native Google Noto TTF fallback for Mathematical Alphanumeric Symbols, Dingbats, and Ornamental Dingbats
+description=Systemless fallback module using Google Noto Math and Symbols2 TrueType fonts to render missing Unicode mathematical symbols, dingbats, and ornamental glyphs.
