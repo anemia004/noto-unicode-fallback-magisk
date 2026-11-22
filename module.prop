@@ -1,6 +1,7 @@
 id=noto_unicode_fallback
 name=Noto Unicode Fallback
 version=v1.0
-versionCode=1
-author=yourname
+versionCode=100
+author=anemia004
 description=Systemless fallback module using Google Noto Math and Symbols2 TrueType fonts to render missing Unicode mathematical symbols, dingbats, and ornamental glyphs.
+updateJson=https://raw.githubusercontent.com/anemia004/noto-unicode-fallback-magisk/main/update.json
