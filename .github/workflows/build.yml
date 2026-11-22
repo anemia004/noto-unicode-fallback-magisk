@@ -2,9 +2,13 @@ name: Build and Release Magisk Module
 
 on:
   push:
-    branches:
-      - main
+    branches: [main]
   workflow_dispatch:
+    inputs:
+      force_release:
+        description: "Force a new release even if Google fonts have not changed"
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -14,27 +18,45 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repository
+      - name: Checkout repository with full tag history
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      - name: Install fontTools for glyph verification
+      - name: Install fontTools for glyph and version inspection
         run: |
           sudo apt-get update
           sudo apt-get install -y python3-fonttools file
 
-      - name: Download native Google Noto TrueType fallback fonts
+      - name: Download latest upstream Google Noto TrueType fonts
         run: |
           mkdir -p build_pkg/system/fonts
-          curl -fsSL "https://github.com/google/fonts/raw/main/ofl/notosansmath/NotoSansMath-Regular.ttf" \
-            -o "build_pkg/system/fonts/DroidSansFallback.ttf"
-          curl -fsSL "https://github.com/google/fonts/raw/main/ofl/notosanssymbols2/NotoSansSymbols2-Regular.ttf" \
-            -o "build_pkg/system/fonts/NotoSansSymbols-Regular-Subsetted2.ttf"
+
+          if ! curl -fsSL "https://github.com/notofonts/math/raw/main/fonts/NotoSansMath/hinted/ttf/NotoSansMath-Regular.ttf" \
+            -o "build_pkg/system/fonts/DroidSansFallback.ttf"; then
+            if ! curl -fsSL "https://github.com/notofonts/math/raw/main/fonts/NotoSansMath/unhinted/ttf/NotoSansMath-Regular.ttf" \
+              -o "build_pkg/system/fonts/DroidSansFallback.ttf"; then
+              curl -fsSL "https://github.com/google/fonts/raw/main/ofl/notosansmath/NotoSansMath-Regular.ttf" \
+                -o "build_pkg/system/fonts/DroidSansFallback.ttf"
+            fi
+          fi
+
+          if ! curl -fsSL "https://github.com/notofonts/symbols/raw/main/fonts/NotoSansSymbols2/hinted/ttf/NotoSansSymbols2-Regular.ttf" \
+            -o "build_pkg/system/fonts/NotoSansSymbols-Regular-Subsetted2.ttf"; then
+            if ! curl -fsSL "https://github.com/notofonts/symbols/raw/main/fonts/NotoSansSymbols2/unhinted/ttf/NotoSansSymbols2-Regular.ttf" \
+              -o "build_pkg/system/fonts/NotoSansSymbols-Regular-Subsetted2.ttf"; then
+              curl -fsSL "https://github.com/google/fonts/raw/main/ofl/notosanssymbols2/NotoSansSymbols2-Regular.ttf" \
+                -o "build_pkg/system/fonts/NotoSansSymbols-Regular-Subsetted2.ttf"
+            fi
+          fi
+
           file build_pkg/system/fonts/*.ttf
           ls -lh build_pkg/system/fonts/*.ttf
 
-      - name: Verify TrueType headers and required Unicode glyphs
+      - name: Verify TrueType headers, glyphs, and internal font versions
         run: |
-          python3 -c '
+          python3 - << 'EOF'
+          import os
           from fontTools.ttLib import TTFont
 
           math_font = TTFont("build_pkg/system/fonts/DroidSansFallback.ttf")
@@ -43,8 +65,10 @@ jobs:
           for label, font in [("Math", math_font), ("Symbols2", sym_font)]:
               assert font.sfntVersion == "\x00\x01\x00\x00", f"{label} is not native TrueType: {font.sfntVersion!r}"
 
-          combined_cmap = set(math_font.getBestCmap().keys()) | set(sym_font.getBestCmap().keys())
+          math_ver = math_font["name"].getDebugName(5) or "Unknown"
+          sym_ver = sym_font["name"].getDebugName(5) or "Unknown"
 
+          combined_cmap = set(math_font.getBestCmap().keys()) | set(sym_font.getBestCmap().keys())
           checks = [
               (0x1D686, "MATHEMATICAL MONOSPACE CAPITAL W"),
               (0x1D56C, "MATHEMATICAL BOLD FRAKTUR CAPITAL A"),
@@ -55,10 +79,60 @@ jobs:
           for cp, name in checks:
               assert cp in combined_cmap, f"Missing U+{cp:04X} ({name})!"
 
-          print(f"Verified native Noto TTFs: {len(combined_cmap)} combined Unicode codepoints.")
-          '
+          print(f"NotoSansMath: {math_ver}")
+          print(f"NotoSansSymbols2: {sym_ver}")
+          print(f"Verified {len(combined_cmap)} combined Unicode codepoints.")
 
-      - name: Copy module metadata and normalize line endings
+          with open(os.environ["GITHUB_ENV"], "a") as env:
+              env.write(f"MATH_VER={math_ver}\n")
+              env.write(f"SYM_VER={sym_ver}\n")
+          EOF
+
+      - name: Check whether Google updated either font since the last release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          CURRENT_HASH=$(sha256sum build_pkg/system/fonts/DroidSansFallback.ttf build_pkg/system/fonts/NotoSansSymbols-Regular-Subsetted2.ttf | awk '{print $1}' | paste -sd '-' -)
+          echo "CURRENT_HASH=${CURRENT_HASH}" >> "$GITHUB_ENV"
+
+          PREV_NOTES=$(gh release view --json body -q '.body' 2>/dev/null || true)
+          PREV_HASH=$(echo "$PREV_NOTES" | grep -oE 'Fonts-SHA256: [0-9a-f-]+' | awk '{print $2}' | head -n1 || true)
+
+          echo "Previous release font hash: ${PREV_HASH:-none}"
+          echo "Current downloaded hash:    ${CURRENT_HASH}"
+
+          if [ "${{ inputs.force_release }}" = "true" ] || [ -z "$PREV_HASH" ] || [ "$CURRENT_HASH" != "$PREV_HASH" ]; then
+            echo "HAS_FONT_UPDATE=true" >> "$GITHUB_ENV"
+            echo "Font update detected (or force enabled) — creating release."
+          else
+            echo "HAS_FONT_UPDATE=false" >> "$GITHUB_ENV"
+            echo "No new Google font update available — skipping release and tag."
+          fi
+
+      - name: Calculate next version tag automatically
+        if: env.HAS_FONT_UPDATE == 'true'
+        run: |
+          git fetch --tags --force
+          LAST_TAG=$(git tag -l 'v[0-9]*.[0-9]*' | sort -V | tail -n 1)
+
+          if [ -z "$LAST_TAG" ]; then
+            NEXT_VER="v1.0"
+            NEXT_CODE=100
+          else
+            MAJOR=$(echo "$LAST_TAG" | sed 's/^v//' | cut -d'.' -f1)
+            MINOR=$(echo "$LAST_TAG" | sed 's/^v//' | cut -d'.' -f2)
+            NEXT_MINOR=$((MINOR + 1))
+            NEXT_VER="v${MAJOR}.${NEXT_MINOR}"
+            NEXT_CODE=$((MAJOR * 100 + NEXT_MINOR))
+          fi
+
+          ZIP_FILE="Noto-Unicode-Fallback-${NEXT_VER}.zip"
+          echo "NEXT_VER=${NEXT_VER}" >> "$GITHUB_ENV"
+          echo "NEXT_CODE=${NEXT_CODE}" >> "$GITHUB_ENV"
+          echo "ZIP_FILE=${ZIP_FILE}" >> "$GITHUB_ENV"
+
+      - name: Stamp new version into module.prop and normalize line endings
+        if: env.HAS_FONT_UPDATE == 'true'
         run: |
           for f in "module.prop" "customize.sh"; do
             if [ ! -s "$f" ]; then
@@ -68,10 +142,11 @@ jobs:
           done
           cp module.prop customize.sh build_pkg/
           sed -i 's/\r$//' build_pkg/module.prop build_pkg/customize.sh
-          MOD_VER=$(grep -E '^version=' module.prop | head -n1 | cut -d'=' -f2- | tr -cd '[:alnum:]._-')
-          echo "MOD_VER=${MOD_VER:-v1.0}" >> "$GITHUB_ENV"
+          sed -i "s/^version=.*/version=${NEXT_VER}/" build_pkg/module.prop
+          sed -i "s/^versionCode=.*/versionCode=${NEXT_CODE}/" build_pkg/module.prop
 
       - name: Generate Magisk META-INF installer
+        if: env.HAS_FONT_UPDATE == 'true'
         run: |
           mkdir -p build_pkg/META-INF/com/google/android
           cat <<'EOF' > build_pkg/META-INF/com/google/android/update-binary
@@ -94,26 +169,21 @@ jobs:
           chmod 755 build_pkg/META-INF/com/google/android/update-binary
           printf '#MAGISK\n' > build_pkg/META-INF/com/google/android/updater-script
 
-      - name: Package Magisk module ZIP at root
+      - name: Package versioned Magisk module ZIP at root
+        if: env.HAS_FONT_UPDATE == 'true'
         run: |
-          (cd build_pkg && zip -r9 ../Noto-Unicode-Fallback.zip META-INF module.prop customize.sh system -x "*.DS_Store")
-          echo "=== Verifying ZIP root contents ==="
-          unzip -l Noto-Unicode-Fallback.zip
+          (cd build_pkg && zip -r9 "../${ZIP_FILE}" META-INF module.prop customize.sh system -x "*.DS_Store")
+          unzip -l "${ZIP_FILE}"
 
-      - name: Publish directly to GitHub Releases
+      - name: Create new versioned GitHub Release
+        if: env.HAS_FONT_UPDATE == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          TAG="latest"
-          TITLE="Noto Unicode Fallback ${MOD_VER}"
-          NOTES="Direct flashable Magisk module ZIP using native Google Noto Math and Symbols2 TrueType fonts. Flash directly in Magisk without extracting."
+          printf 'Automatically fetched from Google upstream Noto TrueType fonts:\n* **Noto Sans Math:** `%s`\n* **Noto Sans Symbols 2:** `%s`\n\nDownload `%s` and flash directly in Magisk without extracting.\n\n<!-- Fonts-SHA256: %s -->\n' \
+            "${MATH_VER}" "${SYM_VER}" "${ZIP_FILE}" "${CURRENT_HASH}" > release_notes.md
 
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release delete-asset "$TAG" Quivira-Fallback.zip -y >/dev/null 2>&1 || true
-            gh release upload "$TAG" Noto-Unicode-Fallback.zip --clobber
-            gh release edit "$TAG" --title "$TITLE" --notes "$NOTES"
-          else
-            gh release create "$TAG" Noto-Unicode-Fallback.zip \
-              --title "$TITLE" \
-              --notes "$NOTES"
-          fi
+          gh release create "${NEXT_VER}" "${ZIP_FILE}" \
+            --title "Noto Unicode Fallback ${NEXT_VER}" \
+            --notes-file release_notes.md \
+            --latest
