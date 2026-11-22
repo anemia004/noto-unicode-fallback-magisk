@@ -1,6 +1,6 @@
 {
-  "version": "v1.1",
-  "versionCode": 101,
-  "zipUrl": "https://github.com/anemia004/noto-unicode-fallback-magisk/releases/download/v1.1/Noto-Unicode-Fallback-v1.1.zip",
+  "version": "v1.0",
+  "versionCode": 100,
+  "zipUrl": "https://github.com/anemia004/noto-unicode-fallback-magisk/releases/download/v1.0/Noto-Unicode-Fallback-v1.0.zip",
   "changelog": "https://raw.githubusercontent.com/anemia004/noto-unicode-fallback-magisk/main/changelog.md"
 }
