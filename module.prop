@@ -1,6 +1,6 @@
 id=quivira_fallback
-name=Quivira Font Fallback
-version=v1.0
-versionCode=1
+name=Noto Unicode Fallback (Math & Symbols)
+version=v3.0
+versionCode=3
 author=yourname
-description=Adds Quivira as a last-resort systemless fallback font for Mathematical Alphanumeric Symbols and Dingbats on Android 7.1.2 without changing normal UI text.
+description=Native Google Noto TTF fallback for Mathematical Alphanumeric Symbols, Dingbats, and Ornamental Dingbats
